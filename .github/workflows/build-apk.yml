@@ -1,93 +1,126 @@
+name: Build APK
 
-name: Build Android APK
-
+# Membangun APK Android (debug-signed, langsung bisa dipasang) pada:
+#   - push ke main / master
+#   - tag v*  (otomatis membuat GitHub Release berisi APK)
+#   - manual: Actions -> Build APK -> Run workflow
 on:
   push:
-    branches: [main]
+    branches: [main, master]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      admin:
+        description: "Ikut bangun versi ADMIN (uji karakter penuh)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 env:
-  GODOT_VERSION: "4.3.0"
+  GODOT_VERSION: "4.3"
 
 jobs:
-  build-android:
-    name: Build Fantasy Life RPG APK
+  build:
     runs-on: ubuntu-22.04
-
+    timeout-minutes: 60
+    env:
+      HAS_RELEASE_KEY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          cmdline-tools-version: 15859902
-          accept-android-sdk-licenses: true
-          log-accepted-android-sdk-licenses: false
-          packages: ""
+      - uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK packages
+      - name: Pasang platform & build-tools Android
         run: |
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-34" \
-            "build-tools;34.0.0" \
-            "ndk;25.2.9519653"
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-34" "cmdline-tools;latest" "cmake;3.10.2.4988749" "ndk;23.2.8568313"
 
-      - name: Setup Godot and export templates
-        uses: chickensoft-games/setup-godot@v2
+      - uses: chickensoft-games/setup-godot@v2
         with:
-          version: ${{ env.GODOT_VERSION }}
+          version: ${{ env.GODOT_VERSION }}.0
           use-dotnet: false
           include-templates: true
 
-      - name: Create Android debug keystore
-        shell: bash
+      - name: Keystore debug + pengaturan editor Godot
         run: |
-          keytool -genkeypair -v \
-            -keystore "$RUNNER_TEMP/debug.keystore" \
-            -storepass android \
-            -keypass android \
-            -alias androiddebugkey \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
+          mkdir -p "$HOME/.config/godot" build
+          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore "$HOME/debug.keystore" \
+            -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999
+          cat > "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres" <<EOT
+          [gd_resource type="EditorSettings" format=3]
+          [resource]
+          export/android/android_sdk_path = "${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          export/android/java_sdk_path = "${JAVA_HOME}"
+          export/android/debug_keystore = "$HOME/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          export/android/force_system_user = false
+          export/android/shutdown_adb_on_exit = true
+          EOT
+          sed -i 's/^          //' "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres"
 
-          sed -i "s|^keystore/debug=.*|keystore/debug=\"$RUNNER_TEMP/debug.keystore\"|" export_presets.cfg
-          sed -i 's|^keystore/debug_user=.*|keystore/debug_user="androiddebugkey"|' export_presets.cfg
-          sed -i 's|^keystore/debug_password=.*|keystore/debug_password="android"|' export_presets.cfg
-          sed -i "s|^version/code=.*|version/code=${GITHUB_RUN_NUMBER}|" export_presets.cfg
-          sed -i "s|^version/name=.*|version/name=\"0.1.${GITHUB_RUN_NUMBER}\"|" export_presets.cfg
-
-      - name: Import Godot project
-        run: godot --headless --editor --path . --import
-
-      - name: Export Android APK
+      - name: Nomor versi dari nomor run
         run: |
+          sed -i "s/^version\/code=.*/version\/code=${{ github.run_number }}/" export_presets.cfg
+          sed -i "s/^version\/name=.*/version\/name=\"0.1.${{ github.run_number }}\"/" export_presets.cfg
+
+      - name: Impor aset
+        run: godot --headless --path . --import || true
+
+      - name: Uji cepat (data, unit, save, perf)
+        continue-on-error: true   # peringatan saja, tidak menghalangi build APK
+        run: |
+          fail=0
+          for t in test_data unit_test save_test perf_test; do
+            godot --headless --path . res://tools/$t.tscn | tee /tmp/$t.log
+            if grep -qE "CHECK FAIL|SCRIPT ERROR" /tmp/$t.log; then fail=1; fi
+          done
+          exit $fail
+
+      - name: Ekspor APK (game)
+        run: godot --headless --path . --export-debug "Android" build/fantasy_life_rpg.apk
+
+      # APK RILIS opsional — hanya jalan bila Secrets repo diisi:
+      #   ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS, ANDROID_KEYSTORE_PASSWORD
+      - name: Ekspor APK RILIS (opsional)
+        if: ${{ env.HAS_RELEASE_KEY == 'true' }}
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          GODOT_ANDROID_KEYSTORE_RELEASE_USER: ${{ secrets.ANDROID_KEY_ALIAS }}
+          GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          echo "$KS_B64" | base64 -d > "$HOME/release.keystore"
+          export GODOT_ANDROID_KEYSTORE_RELEASE_PATH="$HOME/release.keystore"
+          godot --headless --path . --export-release "Android" build/fantasy_life_rpg_release.apk
+          rm -f "$HOME/release.keystore"
+
+      - name: Bangun & ekspor versi ADMIN
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.admin || startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          python3 tools/make_admin.py
+          cd ../fantasy_life_rpg_admin 2>/dev/null || cd "$(dirname "$GITHUB_WORKSPACE")/fantasy_life_rpg_admin"
+          godot --headless --path . --import || true
           mkdir -p build
-          godot --headless --path . --export-debug "Android" build/fantasy_life_rpg.apk
-          test -s build/fantasy_life_rpg.apk
+          godot --headless --path . --export-debug "Android" build/fantasy_life_rpg_admin.apk
+          cp build/fantasy_life_rpg_admin.apk "$GITHUB_WORKSPACE/build/"
 
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: fantasy-life-rpg-android
-          path: build/fantasy_life_rpg.apk
+          name: fantasy-life-rpg-apk
+          path: build/*.apk
           if-no-files-found: error
-          retention-days: 14
 
-      - name: Publish GitHub Release
+      - name: Rilis (hanya tag v*)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: build/fantasy_life_rpg.apk
+          files: build/*.apk
           generate_release_notes: true
+          
