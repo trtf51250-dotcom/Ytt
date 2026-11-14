@@ -34,6 +34,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cari folder proyek Godot (boleh di akar repo atau di subfolder)
+        run: |
+          PGD="$(find . -name project.godot -not -path './.git/*' -not -path './fantasy_life_rpg_admin/*' | awk '{print length, $0}' | sort -n | head -n1 | cut -d' ' -f2-)"
+          if [ -z "$PGD" ]; then echo "project.godot tidak ditemukan di repo"; ls -la; exit 1; fi
+          P="$(dirname "$PGD")"
+          echo "Proyek ada di: $P"
+          if [ "$P" != "." ]; then cp -a "$P"/. . ; fi
+          ls export_presets.cfg project.godot
+          mkdir -p build
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
