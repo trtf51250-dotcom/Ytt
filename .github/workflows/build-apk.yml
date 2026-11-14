@@ -36,6 +36,14 @@ jobs:
 
       - name: Cari folder proyek Godot (boleh di akar repo atau di subfolder)
         run: |
+          # Kalau yang terunggah ke repo adalah file ZIP (belum dibuka), buka otomatis di sini
+          if [ -z "$(find . -name project.godot -not -path './.git/*' | head -n1)" ]; then
+            for z in $(find . -maxdepth 2 -name '*.zip' -not -path './.git/*'); do
+              echo "Membuka $z"
+              mkdir -p _proyek_dari_zip
+              unzip -q -o "$z" -d _proyek_dari_zip
+            done
+          fi
           PGD="$(find . -name project.godot -not -path './.git/*' -not -path './fantasy_life_rpg_admin/*' | awk '{print length, $0}' | sort -n | head -n1 | cut -d' ' -f2-)"
           if [ -z "$PGD" ]; then echo "project.godot tidak ditemukan di repo"; ls -la; exit 1; fi
           P="$(dirname "$PGD")"
