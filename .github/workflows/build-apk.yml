@@ -1,9 +1,9 @@
 name: Build APK
 
 # Membangun APK Android (debug-signed, langsung bisa dipasang) pada:
-#   - push ke main / master
-#   - tag v*  (otomatis membuat GitHub Release berisi APK)
-#   - manual: Actions -> Build APK -> Run workflow
+# - push ke main / master
+# - tag v* (otomatis membuat GitHub Release berisi APK)
+# - manual: Actions -> Build APK -> Run workflow
 on:
   push:
     branches: [main, master]
@@ -17,6 +17,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   GODOT_VERSION: "4.3"
@@ -40,7 +44,7 @@ jobs:
       - name: Pasang platform & build-tools Android
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-34" "cmdline-tools;latest" "cmake;3.10.2.4988749" "ndk;23.2.8568313"
+          sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-34" "cmdline-tools;latest"
 
       - uses: chickensoft-games/setup-godot@v2
         with:
@@ -53,18 +57,8 @@ jobs:
           mkdir -p "$HOME/.config/godot" build
           keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore "$HOME/debug.keystore" \
             -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999
-          cat > "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres" <<EOT
-          [gd_resource type="EditorSettings" format=3]
-          [resource]
-          export/android/android_sdk_path = "${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-          export/android/java_sdk_path = "${JAVA_HOME}"
-          export/android/debug_keystore = "$HOME/debug.keystore"
-          export/android/debug_keystore_user = "androiddebugkey"
-          export/android/debug_keystore_pass = "android"
-          export/android/force_system_user = false
-          export/android/shutdown_adb_on_exit = true
-          EOT
-          sed -i 's/^          //' "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres"
+          cat > "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres" <<EOT [gd_resource type="EditorSettings" format=3] [resource] export/android/android_sdk_path = "${ANDROID_SDK_ROOT:-$ANDROID_HOME}" export/android/java_sdk_path = "${JAVA_HOME}" export/android/debug_keystore = "$HOME/debug.keystore" export/android/debug_keystore_user = "androiddebugkey" export/android/debug_keystore_pass = "android" export/android/force_system_user = false export/android/shutdown_adb_on_exit = true EOT
+          cp "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres" "$HOME/.config/godot/editor_settings-4.tres"
 
       - name: Nomor versi dari nomor run
         run: |
@@ -88,7 +82,7 @@ jobs:
         run: godot --headless --path . --export-debug "Android" build/fantasy_life_rpg.apk
 
       # APK RILIS opsional — hanya jalan bila Secrets repo diisi:
-      #   ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS, ANDROID_KEYSTORE_PASSWORD
+      # ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS, ANDROID_KEYSTORE_PASSWORD
       - name: Ekspor APK RILIS (opsional)
         if: ${{ env.HAS_RELEASE_KEY == 'true' }}
         env:
@@ -102,6 +96,7 @@ jobs:
           rm -f "$HOME/release.keystore"
 
       - name: Bangun & ekspor versi ADMIN
+        continue-on-error: true   # kegagalan admin tidak boleh menggagalkan APK utama
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.admin || startsWith(github.ref, 'refs/tags/v') }}
         run: |
           python3 tools/make_admin.py
@@ -117,10 +112,24 @@ jobs:
           path: build/*.apk
           if-no-files-found: error
 
+      - name: Perbarui rilis "latest" (push ke main/master)
+        if: github.ref_type == 'branch'
+        run: |
+          git tag -f latest
+          git push -f origin latest
+      - name: Rilis "latest" (APK terbaru, mudah diunduh dari HP)
+        if: github.ref_type == 'branch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Build terbaru"
+          prerelease: true
+          files: build/*.apk
+          body: "APK otomatis dari commit ${{ github.sha }} (run #${{ github.run_number }}). Unduh file .apk lalu pasang di HP."
+
       - name: Rilis (hanya tag v*)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: build/*.apk
           generate_release_notes: true
-          
