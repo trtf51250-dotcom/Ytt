@@ -1,6 +1,6 @@
 name: Build APK
 
-# Membangun APK Android (debug-signed, langsung bisa dipasang) pada:
+# Membangun APK Android pada (mode RILIS, ditandatangani keystore debug otomatis bila rahasia rilis tidak diisi; langsung bisa dipasang):
 # - push ke main / master
 # - tag v* (otomatis membuat GitHub Release berisi APK)
 # - manual: Actions -> Build APK -> Run workflow
@@ -34,36 +34,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cari folder proyek Godot (boleh di akar repo atau di subfolder)
+      - name: Buka ZIP proyek bila yang terunggah ke repo adalah file ZIP
+        shell: bash
         run: |
-          # Kalau yang terunggah ke repo adalah file ZIP (belum dibuka), buka otomatis di sini
-          if [ -z "$(find . -name project.godot -not -path './.git/*' | head -n1)" ]; then
-            for z in $(find . -maxdepth 2 -name '*.zip' -not -path './.git/*'); do
-              echo "Membuka $z"
-              mkdir -p _proyek_dari_zip
-              unzip -q -o "$z" -d _proyek_dari_zip
-            done
+          # Bila project.godot belum ada di akar repo (mis. yang diunggah lewat web adalah file ZIP), buka ZIP apa pun namanya
+          # (spasi / "(1)" di nama aman) lalu pindahkan isi proyek ke akar repo.
+          if [ ! -f project.godot ]; then
+            found=""
+            while IFS= read -r -d '' z; do
+              found="$z"
+              break
+            done < <(find . -maxdepth 2 -type f \( -iname '*.zip' \) -not -path './.git/*' -print0 | sort -z)
+            if [ -n "$found" ]; then
+              echo "Membuka: $found"
+              rm -rf /tmp/_proj && mkdir -p /tmp/_proj
+              unzip -q "$found" -d /tmp/_proj
+              pj=$(find /tmp/_proj -name project.godot -not -path '*/.godot/*' | head -n1)
+              if [ -z "$pj" ]; then echo "Error: project.godot tidak ditemukan di dalam ZIP"; exit 1; fi
+              cp -a "$(dirname "$pj")"/. .
+            fi
           fi
-          PGD="$(find . -name project.godot -not -path './.git/*' -not -path './fantasy_life_rpg_admin/*' | awk '{print length, $0}' | sort -n | head -n1 | cut -d' ' -f2-)"
-          if [ -z "$PGD" ]; then echo "project.godot tidak ditemukan di repo"; ls -la; exit 1; fi
-          P="$(dirname "$PGD")"
-          echo "Proyek ada di: $P"
-          if [ "$P" != "." ]; then cp -a "$P"/. . ; fi
-          ls export_presets.cfg project.godot
-          mkdir -p build
+          test -f project.godot || { echo "Error: project.godot tidak ada di akar repo"; exit 1; }
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Pasang platform & build-tools Android (pakai SDK bawaan runner)
+      - uses: android-actions/setup-android@v3
+
+      - name: Pasang platform & build-tools Android
         run: |
-          export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
-          SDKM="$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -n1)"
-          yes | "$SDKM" --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
-          "$SDKM" --sdk_root="$ANDROID_HOME" "platform-tools" "build-tools;34.0.0" "platforms;android-34"
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-34" "cmdline-tools;latest"
 
       - uses: chickensoft-games/setup-godot@v2
         with:
@@ -74,23 +77,10 @@ jobs:
       - name: Keystore debug + pengaturan editor Godot
         run: |
           mkdir -p "$HOME/.config/godot" build
-          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore "$HOME/debug.keystore" -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999
-          SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-          F="$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres"
-          {
-            echo '[gd_resource type="EditorSettings" format=3]'
-            echo ''
-            echo '[resource]'
-            echo "export/android/android_sdk_path = \"$SDK\""
-            echo "export/android/java_sdk_path = \"$JAVA_HOME\""
-            echo "export/android/debug_keystore = \"$HOME/debug.keystore\""
-            echo 'export/android/debug_keystore_user = "androiddebugkey"'
-            echo 'export/android/debug_keystore_pass = "android"'
-            echo 'export/android/force_system_user = false'
-            echo 'export/android/shutdown_adb_on_exit = true'
-          } > "$F"
-          cp "$F" "$HOME/.config/godot/editor_settings-4.tres"
-          cat "$F"
+          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore "$HOME/debug.keystore" \
+            -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999
+          cat > "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres" <<EOT [gd_resource type="EditorSettings" format=3] [resource] export/android/android_sdk_path = "${ANDROID_SDK_ROOT:-$ANDROID_HOME}" export/android/java_sdk_path = "${JAVA_HOME}" export/android/debug_keystore = "$HOME/debug.keystore" export/android/debug_keystore_user = "androiddebugkey" export/android/debug_keystore_pass = "android" export/android/force_system_user = false export/android/shutdown_adb_on_exit = true EOT
+          cp "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres" "$HOME/.config/godot/editor_settings-4.tres"
 
       - name: Nomor versi dari nomor run
         run: |
@@ -110,8 +100,16 @@ jobs:
           done
           exit $fail
 
-      - name: Ekspor APK (game)
-        run: godot --headless --path . --export-debug "Android" build/fantasy_life_rpg.apk
+      # PENTING: APK harus diekspor sebagai RILIS. Template "debug" Godot jauh lebih lambat (GDScript berjalan dengan pemeriksaan
+      # debugger/profiler tambahan) sehingga terasa berat & patah-patah di HP. Bila ekspor rilis gagal, jatuh ke debug agar build tetap jadi.
+      - name: Ekspor APK (game, RILIS)
+        if: ${{ env.HAS_RELEASE_KEY != 'true' }}
+        run: |
+          export GODOT_ANDROID_KEYSTORE_RELEASE_PATH="$HOME/debug.keystore"
+          export GODOT_ANDROID_KEYSTORE_RELEASE_USER=androiddebugkey
+          export GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD=android
+          godot --headless --path . --export-release "Android" build/fantasy_life_rpg.apk \
+            || { echo "::warning::Ekspor rilis gagal, memakai debug (lebih lambat di HP)"; godot --headless --path . --export-debug "Android" build/fantasy_life_rpg.apk; }
 
       # APK RILIS opsional — hanya jalan bila Secrets repo diisi:
       # ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS, ANDROID_KEYSTORE_PASSWORD
@@ -124,7 +122,7 @@ jobs:
         run: |
           echo "$KS_B64" | base64 -d > "$HOME/release.keystore"
           export GODOT_ANDROID_KEYSTORE_RELEASE_PATH="$HOME/release.keystore"
-          godot --headless --path . --export-release "Android" build/fantasy_life_rpg_release.apk
+          godot --headless --path . --export-release "Android" build/fantasy_life_rpg.apk
           rm -f "$HOME/release.keystore"
 
       - name: Bangun & ekspor versi ADMIN
@@ -135,7 +133,11 @@ jobs:
           cd ../fantasy_life_rpg_admin 2>/dev/null || cd "$(dirname "$GITHUB_WORKSPACE")/fantasy_life_rpg_admin"
           godot --headless --path . --import || true
           mkdir -p build
-          godot --headless --path . --export-debug "Android" build/fantasy_life_rpg_admin.apk
+          export GODOT_ANDROID_KEYSTORE_RELEASE_PATH="$HOME/debug.keystore"
+          export GODOT_ANDROID_KEYSTORE_RELEASE_USER=androiddebugkey
+          export GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD=android
+          godot --headless --path . --export-release "Android" build/fantasy_life_rpg_admin.apk \
+            || godot --headless --path . --export-debug "Android" build/fantasy_life_rpg_admin.apk
           cp build/fantasy_life_rpg_admin.apk "$GITHUB_WORKSPACE/build/"
 
       - uses: actions/upload-artifact@v4
