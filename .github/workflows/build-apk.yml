@@ -62,6 +62,8 @@ jobs:
           java-version: "17"
 
       - uses: android-actions/setup-android@v3
+        with:
+          packages: ""   # bawaan v3 memasang paket "tools" yang sudah tidak ada di sdkmanager baru; paket dipasang di langkah berikutnya
 
       - name: Pasang platform & build-tools Android
         run: |
