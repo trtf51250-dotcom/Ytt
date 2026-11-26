@@ -70,7 +70,11 @@ jobs:
       - name: Impor aset
         run: |
           # Gagal impor = gagal build (dulu `|| true` menelan error; aset yang tak terimpor menyebabkan atlas null saat game jalan)
-          godot --headless --path . --import 2>&1 | tee /tmp/import.log || true
+          # Kode keluar Godot sengaja TIDAK dipakai (kadang non-nol saat menutup, padahal impor sukses); yang menentukan adalah log & hasil impor.
+          set +e
+          godot --headless --path . --import > /tmp/import.log 2>&1
+          set -e
+          cat /tmp/import.log
           if grep -qiE "failed to import|error importing|cannot open file|failed loading resource" /tmp/import.log; then
             echo "::error::Impor aset gagal, lihat log di atas."; exit 1
           fi
@@ -81,8 +85,7 @@ jobs:
         continue-on-error: true
         run: godot --headless --path . res://tools/bake_anims.tscn
 
-      - name: Uji cepat (data, unit, save, perf)
-        continue-on-error: true   # peringatan saja, tidak menghalangi build APK
+      - name: Uji cepat (data, unit, save, perf) - WAJIB lulus
         run: |
           fail=0
           for t in test_data unit_test save_test perf_test; do
