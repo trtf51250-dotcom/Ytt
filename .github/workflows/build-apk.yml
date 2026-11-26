@@ -1,9 +1,9 @@
 name: Build APK
 
 # Membangun APK Android pada (mode RILIS, ditandatangani keystore debug otomatis bila rahasia rilis tidak diisi; langsung bisa dipasang):
-# - push ke main / master
-# - tag v* (otomatis membuat GitHub Release berisi APK)
-# - manual: Actions -> Build APK -> Run workflow
+#   - push ke main / master
+#   - tag v*  (otomatis membuat GitHub Release berisi APK)
+#   - manual: Actions -> Build APK -> Run workflow
 on:
   push:
     branches: [main, master]
@@ -80,7 +80,19 @@ jobs:
               -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999
           fi
           keytool -list -v -keystore "$HOME/debug.keystore" -storepass android | grep -E "SHA1|SHA256" | sed 's/^/Sidik jari kunci: /'
-          cat > "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres" <<EOT [gd_resource type="EditorSettings" format=3] [resource] export/android/android_sdk_path = "${ANDROID_SDK_ROOT:-$ANDROID_HOME}" export/android/java_sdk_path = "${JAVA_HOME}" export/android/debug_keystore = "$HOME/debug.keystore" export/android/debug_keystore_user = "androiddebugkey" export/android/debug_keystore_pass = "android" export/android/force_system_user = false export/android/shutdown_adb_on_exit = true EOT
+          # Ditulis dengan printf (BUKAN heredoc): heredoc rusak bila indentasi YAML berubah (mis. saat diedit di editor web/HP).
+          SETTINGS="$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres"
+          printf '%s\n' \
+            '[gd_resource type="EditorSettings" format=3]' \
+            '[resource]' \
+            "export/android/android_sdk_path = \"${ANDROID_SDK_ROOT:-$ANDROID_HOME}\"" \
+            "export/android/java_sdk_path = \"${JAVA_HOME}\"" \
+            "export/android/debug_keystore = \"$HOME/debug.keystore\"" \
+            'export/android/debug_keystore_user = "androiddebugkey"' \
+            'export/android/debug_keystore_pass = "android"' \
+            'export/android/force_system_user = false' \
+            'export/android/shutdown_adb_on_exit = true' > "$SETTINGS"
+          cat "$SETTINGS"
           cp "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres" "$HOME/.config/godot/editor_settings-4.tres"
 
       - name: Nomor versi dari nomor run
@@ -126,8 +138,8 @@ jobs:
           godot --headless --path . --export-release "Android" build/fantasy_life_rpg.apk \
             || { echo "::error::Ekspor RILIS GAGAL. Tidak ada APK debug yang dibuat (lambat, audio bisa putus). Kirim log ini untuk diperbaiki."; exit 1; }
 
-      # APK RILIS opsional — hanya jalan bila Secrets repo diisi:
-      # ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS, ANDROID_KEYSTORE_PASSWORD
+      # APK RILIS opsional 鈥� hanya jalan bila Secrets repo diisi:
+      #   ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS, ANDROID_KEYSTORE_PASSWORD
       - name: Ekspor APK RILIS (opsional)
         if: ${{ env.HAS_RELEASE_KEY == 'true' }}
         env:
