@@ -34,36 +34,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Buka ZIP proyek bila yang terunggah ke repo adalah file ZIP
-        shell: bash
-        run: |
-          # Bila project.godot belum ada di akar repo (mis. yang diunggah lewat web adalah file ZIP), buka ZIP apa pun namanya
-          # (spasi / "(1)" di nama aman) lalu pindahkan isi proyek ke akar repo.
-          if [ ! -f project.godot ]; then
-            found=""
-            while IFS= read -r -d '' z; do
-              found="$z"
-              break
-            done < <(find . -maxdepth 2 -type f \( -iname '*.zip' \) -not -path './.git/*' -print0 | sort -z)
-            if [ -n "$found" ]; then
-              echo "Membuka: $found"
-              rm -rf /tmp/_proj && mkdir -p /tmp/_proj
-              unzip -q "$found" -d /tmp/_proj
-              pj=$(find /tmp/_proj -name project.godot -not -path '*/.godot/*' | head -n1)
-              if [ -z "$pj" ]; then echo "Error: project.godot tidak ditemukan di dalam ZIP"; exit 1; fi
-              cp -a "$(dirname "$pj")"/. .
-            fi
-          fi
-          test -f project.godot || { echo "Error: project.godot tidak ada di akar repo"; exit 1; }
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
       - uses: android-actions/setup-android@v3
-        with:
-          packages: ""   # bawaan v3 memasang paket "tools" yang sudah tidak ada di sdkmanager baru; paket dipasang di langkah berikutnya
 
       - name: Pasang platform & build-tools Android
         run: |
@@ -79,20 +55,11 @@ jobs:
       - name: Keystore debug + pengaturan editor Godot
         run: |
           mkdir -p "$HOME/.config/godot" build
-          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore "$HOME/debug.keystore" \
-            -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999
-          ES="$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres"
-          {
-            echo '[gd_resource type="EditorSettings" format=3]'
-            echo '[resource]'
-            echo "export/android/android_sdk_path = \"${ANDROID_SDK_ROOT:-$ANDROID_HOME}\""
-            echo "export/android/java_sdk_path = \"${JAVA_HOME}\""
-            echo "export/android/debug_keystore = \"$HOME/debug.keystore\""
-            echo 'export/android/debug_keystore_user = "androiddebugkey"'
-            echo 'export/android/debug_keystore_pass = "android"'
-            echo 'export/android/force_system_user = false'
-            echo 'export/android/shutdown_adb_on_exit = true'
-          } > "$ES"
+          # Kunci TETAP dari repo (signing/fantasylife_debug.jks): semua build bertanda tangan sama, jadi APK baru bisa DITIMPA di atas
+          # yang lama TANPA uninstall (data permainan tetap). Kunci baru tiap build = HP menolak update & ID perangkat berubah.
+          cp signing/fantasylife_debug.jks "$HOME/debug.keystore"
+          keytool -list -v -keystore "$HOME/debug.keystore" -storepass android | grep -E "SHA1|SHA256" | sed 's/^/Sidik jari kunci: /'
+          cat > "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres" <<EOT [gd_resource type="EditorSettings" format=3] [resource] export/android/android_sdk_path = "${ANDROID_SDK_ROOT:-$ANDROID_HOME}" export/android/java_sdk_path = "${JAVA_HOME}" export/android/debug_keystore = "$HOME/debug.keystore" export/android/debug_keystore_user = "androiddebugkey" export/android/debug_keystore_pass = "android" export/android/force_system_user = false export/android/shutdown_adb_on_exit = true EOT
           cp "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres" "$HOME/.config/godot/editor_settings-4.tres"
 
       - name: Nomor versi dari nomor run
@@ -101,7 +68,18 @@ jobs:
           sed -i "s/^version\/name=.*/version\/name=\"0.1.${{ github.run_number }}\"/" export_presets.cfg
 
       - name: Impor aset
-        run: godot --headless --path . --import || true
+        run: |
+          # Gagal impor = gagal build (dulu `|| true` menelan error; aset yang tak terimpor menyebabkan atlas null saat game jalan)
+          godot --headless --path . --import 2>&1 | tee /tmp/import.log || true
+          if grep -qiE "failed to import|error importing|cannot open file|failed loading resource" /tmp/import.log; then
+            echo "::error::Impor aset gagal, lihat log di atas."; exit 1
+          fi
+          test -d .godot/imported && [ "$(ls .godot/imported | wc -l)" -gt 50 ] || { echo "::error::Folder .godot/imported kosong/kecil: impor tidak jalan."; exit 1; }
+
+      # Hitung animasi anti-tembus/gaya/ulti/fidget SEKALI di sini supaya HP tidak menghitungnya (penyebab patah-patah saat karakter muncul).
+      - name: Bake animasi (resources/anim_baked.res)
+        continue-on-error: true
+        run: godot --headless --path . res://tools/bake_anims.tscn
 
       - name: Uji cepat (data, unit, save, perf)
         continue-on-error: true   # peringatan saja, tidak menghalangi build APK
@@ -122,7 +100,7 @@ jobs:
           export GODOT_ANDROID_KEYSTORE_RELEASE_USER=androiddebugkey
           export GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD=android
           godot --headless --path . --export-release "Android" build/fantasy_life_rpg.apk \
-            || { echo "::warning::Ekspor rilis gagal, memakai debug (lebih lambat di HP)"; godot --headless --path . --export-debug "Android" build/fantasy_life_rpg.apk; }
+            || { echo "::error::Ekspor RILIS GAGAL. Tidak ada APK debug yang dibuat (lambat, audio bisa putus). Kirim log ini untuk diperbaiki."; exit 1; }
 
       # APK RILIS opsional — hanya jalan bila Secrets repo diisi:
       # ANDROID_KEYSTORE_BASE64, ANDROID_KEY_ALIAS, ANDROID_KEYSTORE_PASSWORD
