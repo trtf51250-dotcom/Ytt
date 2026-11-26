@@ -72,7 +72,13 @@ jobs:
           mkdir -p "$HOME/.config/godot" build
           # Kunci TETAP dari repo (signing/fantasylife_debug.jks): semua build bertanda tangan sama, jadi APK baru bisa DITIMPA di atas
           # yang lama TANPA uninstall (data permainan tetap). Kunci baru tiap build = HP menolak update & ID perangkat berubah.
-          cp signing/fantasylife_debug.jks "$HOME/debug.keystore"
+          if [ -f signing/fantasylife_debug.jks ]; then
+            cp signing/fantasylife_debug.jks "$HOME/debug.keystore"
+          else
+            echo "::warning::signing/fantasylife_debug.jks tidak ada di repo. Membuat kunci SEMENTARA: APK ini tidak bisa menimpa APK lain (harus uninstall dulu, data hilang). Tambahkan file itu ke repo."
+            keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore "$HOME/debug.keystore" \
+              -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999
+          fi
           keytool -list -v -keystore "$HOME/debug.keystore" -storepass android | grep -E "SHA1|SHA256" | sed 's/^/Sidik jari kunci: /'
           cat > "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres" <<EOT [gd_resource type="EditorSettings" format=3] [resource] export/android/android_sdk_path = "${ANDROID_SDK_ROOT:-$ANDROID_HOME}" export/android/java_sdk_path = "${JAVA_HOME}" export/android/debug_keystore = "$HOME/debug.keystore" export/android/debug_keystore_user = "androiddebugkey" export/android/debug_keystore_pass = "android" export/android/force_system_user = false export/android/shutdown_adb_on_exit = true EOT
           cp "$HOME/.config/godot/editor_settings-${GODOT_VERSION}.tres" "$HOME/.config/godot/editor_settings-4.tres"
